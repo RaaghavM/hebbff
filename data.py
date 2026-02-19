@@ -217,7 +217,7 @@ def check_recognition_data(data, R):
 def recog_chance(data):
     """Calculates expected performance if network simply guesses based on output statistics
     i.e. the number of zeroes in the data"""
-    return 1-np.sum([xy[1] for xy in data], dtype=np.float)/len(data) 
+    return 1-np.sum([xy[1] for xy in data], dtype=float)/len(data) 
 
 
 def batch(generate_data, batchsize=1, batchDim=1, **dataKwargs):
