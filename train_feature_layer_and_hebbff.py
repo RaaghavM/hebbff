@@ -23,6 +23,7 @@ noMultiRep = True
 increment = 'plus1'
 R0 = 2
 Rf = float('inf') # No upper limit on R during training
+itersToQuit = 2*10**6
 
 # Initialize network
 net = HebbFeatureLayer(init=[d, Nh, Ny], Nx=Nx)
@@ -41,8 +42,7 @@ sampleSpace = TensorDataset(images, dummyClasses)
 generator = GenRecogClassifyData(sampleSpace=sampleSpace)
     
 def generate_recog_data_batch(T,d,R,P,multiRep,batchSize,**kwargs):
-    effective_batch = 1 if batchSize is None else batchSize
-    x,y = generator(T, R, P, effective_batch, multiRep).tensors
+    x,y = generator(T, R, P, batchSize, multiRep).tensors
     return TensorDataset(x, y[..., 0:1])
 
 if type(net) == HebbFeatureLayer:
@@ -55,9 +55,8 @@ gen_data = lambda R: generate_recog_data_batch(T=max(Tmin, R*Tmul),
                                                    softLabels=False,
                                                    interleave=True, 
                                                    multiRep=(not noMultiRep), 
-                                                   batchSize=None,
-                                                   xDataVals='+-',
-                                                   device='cpu')
+                                                   batchSize=1,
+                                                   xDataVals='+-')
 if increment.startswith('plus'):
     n = int(increment[4:])
     increment = lambda R: R+n
@@ -65,10 +64,19 @@ elif increment.startswith('times'):
     n = float(increment[5:])
     increment = lambda R: int(math.ceil(R*n)) 
     
-net.fit('curriculum', gen_data, iters=float('inf'), itersToQuit=(2*10**6), batchSize=None, learningRate=1e-3,
+net.fit('curriculum', gen_data, iters=float('inf'), itersToQuit=itersToQuit, batchSize=None, learningRate=1e-3,
         filename=save_weights_file, overwrite=False, folder=logs, R0=R0, Rf=Rf, increment=increment)
 
 #plot generalization
+gen_data = lambda R: generate_recog_data_batch(T=max(Tmin, R*Tmul), 
+                                                   d=d, 
+                                                   R=R, 
+                                                   P=P, 
+                                                   softLabels=False,
+                                                   interleave=True, 
+                                                   multiRep=(not noMultiRep), 
+                                                   batchSize=None,
+                                                   xDataVals='+-')
 testR, testAcc, truePosRate, falsePosRate = get_recog_positive_rates(net, gen_data)
 ax = plot_generalization(testR, testAcc, truePosRate, falsePosRate)
 ax.figure.save_figure("results/gen_plot_feature_and_hebbff.png")
