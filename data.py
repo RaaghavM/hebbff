@@ -2,8 +2,12 @@ import random
 import numpy as np
 import torch
 import albumentations as A
-
+import torch.nn as nn
 from torch.utils.data import TensorDataset
+from PIL import Image
+import torchvision.models as models
+from torchvision import transforms
+
 
                
 def generate_recog_data(T=2000, d=50, R=1, P=0.5, interleave=True, multiRep=False, xDataVals='+-', softLabels=False):
@@ -64,56 +68,6 @@ def generate_recog_data(T=2000, d=50, R=1, P=0.5, interleave=True, multiRep=Fals
         data.append((x,np.array([y]))) 
         
     return data_to_tensor(data)
-  
-def generate_recog_data_AD(base_images,T=2000,transform=None,P=0.5,softLabels=False):
-    """
-    Generates recognition dataset where:
-    y[t] = 1 if the underlying image (original or transformed)
-           has been seen before.
-    """
-
-    data = []
-    seen_ids = set()
-
-    #define the transform
-    transform = A.Compose([
-    A.RandomRotate90(),
-    A.HorizontalFlip(p=0.5),
-    A.RandomResizedCrop(224, 224, scale=(0.8, 1.0)),
-    A.RandomBrightnessContrast(p=0.5),
-    ])
-
-    N = len(base_images)
-
-    for t in range(T):
-
-        # Decide whether to repeat or sample new base image
-        if len(seen_ids) > 0 and np.random.rand() < P:
-            # choose from already seen
-            img_id = np.random.choice(list(seen_ids))
-        else:
-            # choose new image
-            img_id = np.random.randint(0, N)
-
-        img = base_images[img_id]
-
-        # Apply random augmentation
-        if transform is not None:
-            img = transform(image=img)["image"]
-
-        # Define label
-        if img_id in seen_ids:
-            y = 1
-        else:
-            y = 0
-            seen_ids.add(img_id)
-
-        if softLabels:
-            y = y*(1-2*softLabels) + softLabels
-
-        data.append((img, np.array([y])))
-
-    return data_to_tensor(data)
  
 def generate_recog_data_batch(T=2000, batchSize=1, d=25, R=1, P=0.5, interleave=True, multiRep=False, softLabels=False, xDataVals='+-', device='cpu'):
     """Faster version of recognition data generation. Generates in batches and uses torch directly    
@@ -157,6 +111,135 @@ def generate_recog_data_batch(T=2000, batchSize=1, d=25, R=1, P=0.5, interleave=
         y = y*0.98 + 0.01
 
     return TensorDataset(x, y)
+
+
+class GenRecogClassifyData_AD():
+    def __init__(self, image_paths=None, transform=None, device='cpu'):
+        """
+        Args:
+            image_paths: list of image file paths, we no longer use a pickle file
+            transform: albumentations transform to apply to images
+            device: torch device
+        """
+        self.image_paths = image_paths
+        self.device = device
+        self.datasize = len(image_paths) if image_paths else 0
+        
+        # Load pretrained ResNet18 and remove classifier
+        self.resnet = models.resnet18(pretrained=True)
+        self.resnet = nn.Sequential(*list(self.resnet.children())[:-1])  # Remove classifier
+        self.resnet.eval()
+        self.resnet.to(device)
+        
+        # Default transform if none provided
+        if transform is None:
+            self.transform = A.Compose([
+                A.RandomRotate90(),
+                A.HorizontalFlip(p=0.5),
+                A.RandomResizedCrop((224, 224), scale=(0.8, 1.0)),
+                A.RandomBrightnessContrast(p=0.5),
+            ])
+        else:
+            self.transform = transform
+            
+        # ImageNet normalization for ResNet
+        self.normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                            std=[0.229, 0.224, 0.225])
+            
+    def load_transform_and_embed_batch(self, indices, apply_transform=True):
+        """Load batch of images, apply transformations, and get ResNet embeddings"""
+        embeddings = []
+        for idx in indices:
+            img_path = self.image_paths[idx]
+            img = Image.open(img_path).convert('RGB')
+            img = np.array(img)
+            
+            if apply_transform and self.transform is not None:
+                img = self.transform(image=img)['image']
+                
+            # Convert to tensor and normalize for ResNet
+            img_tensor = torch.from_numpy(img).float().permute(2, 0, 1) / 255.0
+            img_tensor = self.normalize(img_tensor).to(self.device)
+            
+            # Get ResNet embedding (512-dim)
+            with torch.no_grad():
+                embedding = self.resnet(img_tensor.unsqueeze(0)).squeeze(-1).squeeze(-1)
+            embeddings.append(embedding.squeeze())
+        
+        return torch.stack(embeddings)
+    
+    def __call__(self, T, R, P1=0.5, P2=0.5, batchSize=-1, multiRep=False, device=None):
+        device = self.device
+        
+        # Handle R as scalar or list
+        Rlist = [R] if np.isscalar(R) else R
+        
+        # Determine batchSize
+        squeezeFlag = False
+        if batchSize is None:
+            batchSize = 1
+            squeezeFlag = True
+        elif batchSize < 0:
+            batchSize = self.datasize // T
+        
+        # Randomly select indices for all trials
+        total_samples = T * batchSize
+        if total_samples<self.datasize:
+            print(f'total samples is {total_samples} and the size of dataset is {self.datasize}!')
+        random_indices = torch.randperm(self.datasize)[:total_samples].reshape(T, batchSize)
+        
+        # Initialize embeddings and labels
+        x = torch.zeros(T, batchSize, 512, device=device)
+        y = torch.zeros(T, batchSize, dtype=torch.bool, device=device)
+        
+        # Load initial batch (t=0)
+        initial_indices = random_indices[0].tolist()
+        x[0] = self.load_transform_and_embed_batch(initial_indices, apply_transform=False)
+        
+        # Main loop
+        for t in range(1, T):
+            R = Rlist[np.random.randint(0, len(Rlist))]
+            
+            # Determine repeat mask
+            repeatMask = torch.rand(batchSize, device=device) > P1
+            if not multiRep:
+                repeatMask = repeatMask * (~y[t-R])
+            
+            # Determine transform mask
+            transformMask = torch.rand(batchSize, device=device) > P2
+            
+            # CASE 1: repeat + transform
+            mask1 = repeatMask & transformMask
+            if mask1.any():
+                indices = random_indices[t, mask1].tolist()
+                x[t, mask1] = self.load_transform_and_embed_batch(indices, apply_transform=True)
+                y[t, mask1] = 1
+            
+            # CASE 2: repeat only (no transform)
+            mask2 = repeatMask & (~transformMask)
+            if mask2.any():
+                indices = random_indices[t, mask2].tolist()
+                x[t, mask2] = self.load_transform_and_embed_batch(indices, apply_transform=False)
+                y[t, mask2] = 1
+            
+            # CASE 3: new image (neither repeat nor transform)
+            mask3 = ~(repeatMask)
+            if mask3.any():
+                indices = random_indices[t, mask3].tolist()
+                x[t, mask3] = self.load_transform_and_embed_batch(indices, apply_transform=False)
+                y[t, mask3] = 0  # truly new image
+        
+        # Format output
+        y_out = y.unsqueeze(2).float()
+        c = torch.zeros(T, batchSize, 1, device=device)
+        y_out = torch.cat((y_out, c), dim=-1)
+        
+        data = TensorDataset(x, y_out)
+        
+        if squeezeFlag:
+            data = TensorDataset(*data[:, 0, :])
+        
+        return data
 
 
 class GenRecogClassifyData():
