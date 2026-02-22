@@ -1,7 +1,7 @@
 import random
 import numpy as np
 import torch
-import Albumentations as A
+import albumentations as A
 
 from torch.utils.data import TensorDataset
 
