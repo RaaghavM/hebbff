@@ -1,6 +1,7 @@
 import random
 import numpy as np
 import torch
+import Albumentations as A
 
 from torch.utils.data import TensorDataset
 
@@ -63,7 +64,56 @@ def generate_recog_data(T=2000, d=50, R=1, P=0.5, interleave=True, multiRep=Fals
         data.append((x,np.array([y]))) 
         
     return data_to_tensor(data)
+  
+def generate_recog_data_AD(base_images,T=2000,transform=None,P=0.5,softLabels=False):
+    """
+    Generates recognition dataset where:
+    y[t] = 1 if the underlying image (original or transformed)
+           has been seen before.
+    """
 
+    data = []
+    seen_ids = set()
+
+    #define the transform
+    transform = A.Compose([
+    A.RandomRotate90(),
+    A.HorizontalFlip(p=0.5),
+    A.RandomResizedCrop(224, 224, scale=(0.8, 1.0)),
+    A.RandomBrightnessContrast(p=0.5),
+    ])
+
+    N = len(base_images)
+
+    for t in range(T):
+
+        # Decide whether to repeat or sample new base image
+        if len(seen_ids) > 0 and np.random.rand() < P:
+            # choose from already seen
+            img_id = np.random.choice(list(seen_ids))
+        else:
+            # choose new image
+            img_id = np.random.randint(0, N)
+
+        img = base_images[img_id]
+
+        # Apply random augmentation
+        if transform is not None:
+            img = transform(image=img)["image"]
+
+        # Define label
+        if img_id in seen_ids:
+            y = 1
+        else:
+            y = 0
+            seen_ids.add(img_id)
+
+        if softLabels:
+            y = y*(1-2*softLabels) + softLabels
+
+        data.append((img, np.array([y])))
+
+    return data_to_tensor(data)
  
 def generate_recog_data_batch(T=2000, batchSize=1, d=25, R=1, P=0.5, interleave=True, multiRep=False, softLabels=False, xDataVals='+-', device='cpu'):
     """Faster version of recognition data generation. Generates in batches and uses torch directly    
