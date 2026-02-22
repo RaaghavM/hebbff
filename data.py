@@ -112,9 +112,8 @@ def generate_recog_data_batch(T=2000, batchSize=1, d=25, R=1, P=0.5, interleave=
 
     return TensorDataset(x, y)
 
-
 class GenRecogClassifyData_AD():
-    def __init__(self, image_paths=None, transform=None, device='cpu'):
+    def __init__(self, image_paths=None, transform=None, device='cpu',show=False):
         """
         Args:
             image_paths: list of image file paths, we no longer use a pickle file
@@ -124,6 +123,7 @@ class GenRecogClassifyData_AD():
         self.image_paths = image_paths
         self.device = device
         self.datasize = len(image_paths) if image_paths else 0
+        self.show=show
         
         # Load pretrained ResNet18 and remove classifier
         self.resnet = models.resnet18(pretrained=True)
@@ -148,14 +148,24 @@ class GenRecogClassifyData_AD():
             
     def load_transform_and_embed_batch(self, indices, apply_transform=True):
         """Load batch of images, apply transformations, and get ResNet embeddings"""
+        show=self.show
         embeddings = []
         for idx in indices:
             img_path = self.image_paths[idx]
             img = Image.open(img_path).convert('RGB')
             img = np.array(img)
+            img_np = np.array(img)
             
             if apply_transform and self.transform is not None:
                 img = self.transform(image=img)['image']
+                img_np = np.array(img)
+
+            #visualization to debug
+            if show==True:
+              plt.imshow(img_np)
+              plt.title(f"Index: {idx} | Transform: {apply_transform}")
+              plt.axis('off')
+              plt.show()
                 
             # Convert to tensor and normalize for ResNet
             img_tensor = torch.from_numpy(img).float().permute(2, 0, 1) / 255.0
@@ -173,16 +183,16 @@ class GenRecogClassifyData_AD():
         
         # Handle R as scalar or list
         Rlist = [R] if np.isscalar(R) else R
-        
+        print("datasize:", self.datasize, "T:", T, "datasize//T:", self.datasize // T)
         # Determine batchSize
         squeezeFlag = False
         if batchSize is None:
             batchSize = 1
             squeezeFlag = True
         elif batchSize < 0:
-            batchSize = self.datasize // T
-        
-        # Randomly select indices for all trials
+          batchSize = int(self.datasize // T)  # ensure Python int
+          batchSize = max(1, batchSize)        
+
         total_samples = T * batchSize
         if total_samples<self.datasize:
             print(f'total samples is {total_samples} and the size of dataset is {self.datasize}!')
@@ -201,9 +211,12 @@ class GenRecogClassifyData_AD():
             R = Rlist[np.random.randint(0, len(Rlist))]
             
             # Determine repeat mask
-            repeatMask = torch.rand(batchSize, device=device) > P1
-            if not multiRep:
-                repeatMask = repeatMask * (~y[t-R])
+            if t-R>=0:
+              repeatMask = torch.rand(batchSize, device=device) > P1
+              if not multiRep:
+                  repeatMask = repeatMask * (~y[t-R])
+            else:
+              repeatMask = torch.zeros(batchSize, device=device, dtype=torch.bool)
             
             # Determine transform mask
             transformMask = torch.rand(batchSize, device=device) > P2
@@ -211,23 +224,30 @@ class GenRecogClassifyData_AD():
             # CASE 1: repeat + transform
             mask1 = repeatMask & transformMask
             if mask1.any():
-                indices = random_indices[t, mask1].tolist()
+                indices = random_indices[t-R, mask1].tolist()
                 x[t, mask1] = self.load_transform_and_embed_batch(indices, apply_transform=True)
                 y[t, mask1] = 1
             
             # CASE 2: repeat only (no transform)
             mask2 = repeatMask & (~transformMask)
             if mask2.any():
-                indices = random_indices[t, mask2].tolist()
+                indices = random_indices[t-R, mask2].tolist()
                 x[t, mask2] = self.load_transform_and_embed_batch(indices, apply_transform=False)
                 y[t, mask2] = 1
             
             # CASE 3: new image (neither repeat nor transform)
-            mask3 = ~(repeatMask)
+            mask3 = ~(repeatMask) & (~transformMask)
             if mask3.any():
                 indices = random_indices[t, mask3].tolist()
                 x[t, mask3] = self.load_transform_and_embed_batch(indices, apply_transform=False)
                 y[t, mask3] = 0  # truly new image
+            # CASE 4: new image (neither repeat BUT transform)
+            mask3 = ~(repeatMask) & (transformMask)
+            if mask3.any():
+                indices = random_indices[t, mask3].tolist()
+                x[t, mask3] = self.load_transform_and_embed_batch(indices, apply_transform=True)
+                y[t, mask3] = 0  # truly new image
+              
         
         # Format output
         y_out = y.unsqueeze(2).float()
@@ -240,7 +260,6 @@ class GenRecogClassifyData_AD():
             data = TensorDataset(*data[:, 0, :])
         
         return data
-
 
 class GenRecogClassifyData():
     def __init__(self, d=None, teacher=None, datasize=int(1e4), sampleSpace=None, save=False, device='cpu'):
