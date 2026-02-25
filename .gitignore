@@ -8,6 +8,8 @@
 manuscript/
 results/
 others/
+Images/
+precomputed_embeddings/
 
 *_eval_*.pkl
 *_generalization.pkl
