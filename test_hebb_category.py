@@ -134,12 +134,24 @@ def load_hebb_model(checkpoint_path, device="cpu"):
 # Representation Extractors
 # ============================================================
 
-def extract_hebb_embedding(model, x, device="cpu"):
-    """
-    Extract compressed embedding (128-d feature layer output).
-    """
-    with torch.no_grad():
-        return model.featurizer(x.to(device)).cpu()
+def load_featurizer_from_checkpoint(checkpoint_path, device="cpu"):
+	state = torch.load(checkpoint_path, map_location="cpu")
+	if "featurizer.weight" not in state or "featurizer.bias" not in state:
+		raise ValueError("Checkpoint missing featurizer weights")
+
+	out_dim, in_dim = state["featurizer.weight"].shape
+	featurizer = nn.Linear(in_dim, out_dim)
+	featurizer.weight.data.copy_(state["featurizer.weight"].float())
+	featurizer.bias.data.copy_(state["featurizer.bias"].float())
+	featurizer.to(device)
+	featurizer.eval()
+	return featurizer
+
+
+def apply_featurizer(featurizer, x, device="cpu"):
+	with torch.no_grad():
+		return featurizer(x.to(device)).cpu()
+
 
 
 def extract_hidden_states(model, x, device="cpu"):
@@ -170,7 +182,7 @@ def extract_hidden_states(model, x, device="cpu"):
 # Evaluate One Experiment
 # ============================================================
 
-def evaluate_experiment(exp_dir, hebb_model, args):
+def evaluate_experiment(exp_dir, featurizer, hebb_model, args):
     x, y, class_names, class_counts = load_experiment(exp_dir)
     train_idx, test_idx = stratified_split(y, args.test_frac, args.seed)
 
@@ -187,10 +199,8 @@ def evaluate_experiment(exp_dir, hebb_model, args):
     )
 
     # ---------------- Hebb 128-d Embedding ----------------
-    embed_x = extract_hebb_embedding(hebb_model, x, args.device)
-    embed_train_x, embed_test_x = standardize(
-        embed_x[train_idx], embed_x[test_idx]
-    )
+    embed_x = apply_featurizer(featurizer, x, args.device)
+    embed_train_x, embed_test_x = standardize(embed_x[train_idx], embed_x[test_idx])
     embed_res = train_logistic_classifier(
         embed_train_x, train_y,
         embed_test_x, test_y,
@@ -273,6 +283,7 @@ def main():
     np.random.seed(args.seed)
 
     hebb_model = load_hebb_model(args.checkpoint, args.device)
+    featurizer = load_featurizer_from_checkpoint(args.checkpoint, args.device)
 
     root = Path(args.embeddings_root)
     experiments = sorted([p for p in root.iterdir() if p.is_dir()])
@@ -280,7 +291,7 @@ def main():
     results = {"experiments": {}}
 
     for exp_dir in experiments:
-        exp_res = evaluate_experiment(exp_dir, hebb_model, args)
+        exp_res = evaluate_experiment(exp_dir, featurizer, hebb_model, args)
         results["experiments"][exp_dir.name] = exp_res
 
         print(f"\n[{exp_dir.name}]")
