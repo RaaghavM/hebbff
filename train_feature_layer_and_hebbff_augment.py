@@ -21,8 +21,8 @@ aug_bank = "precomputed_embeddings/aug_bank/brady_aug.npy"
 
 # Parameters
 Nx = 512  # Raw image feature dimension (from ResNet output)
-d = 50    # Compressed feature dimension
-Nh = 16   # Hidden Hebbian layer size
+d = 128    # Compressed feature dimension
+Nh = 32   # Hidden Hebbian layer size
 Ny = 1    # Output dimension (recognition task)
 
 # Train parameters
@@ -34,7 +34,9 @@ noMultiRep = True
 increment = 'plus1'
 R0 = 2
 Rf = float('inf') # No upper limit on R during training
-itersToQuit = 2*10**6
+# itersToQuit = 2*10**6
+itersToQuit = 100000
+accuracyStopThres = 4.9 # Stop training if average accuracy over last 5 epochs exceeds this threshold
 
 # Initialize network
 net = HebbFeatureLayer(init=[d, Nh, Ny], Nx=Nx)
@@ -79,7 +81,7 @@ elif increment.startswith('times'):
     increment = lambda R: int(math.ceil(R*n)) 
     
 net.fit('curriculum', gen_data, iters=float('inf'), itersToQuit=itersToQuit, batchSize=None, learningRate=1e-3,
-        filename=save_weights_file, overwrite=False, folder=logs, R0=R0, Rf=Rf, increment=increment)
+        filename=save_weights_file, overwrite=False, folder=logs, R0=R0, Rf=Rf, increment=increment, accuracyStopThres=accuracyStopThres)
 
 #plot generalization
 gen_data = lambda R: generate_recog_data_batch(T=max(Tmin, R*Tmul), 
@@ -93,5 +95,5 @@ gen_data = lambda R: generate_recog_data_batch(T=max(Tmin, R*Tmul),
                                                    batchSize=None,
                                                    xDataVals='+-')
 testR, testAcc, truePosRate, falsePosRate = get_recog_positive_rates(net, gen_data)
-ax = plot_generalization(testR, testAcc, truePosRate, falsePosRate)
-ax.figure.save_figure(save_fig_file)
+fig, ax = plot_generalization(testR, testAcc, truePosRate, falsePosRate)
+fig.savefig(save_fig_file, dpi=200, bbox_inches="tight")

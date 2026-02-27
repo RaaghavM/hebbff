@@ -195,7 +195,7 @@ def save_bar_plot(results, save_path):
 
 	fig, ax = plt.subplots(figsize=(9, 5))
 	ax.bar(x - width / 2, raw_acc, width, label="Raw 512-d")
-	ax.bar(x + width / 2, feat_acc, width, label="Featurized 50-d")
+	ax.bar(x + width / 2, feat_acc, width, label="Featurized 128-d")
 
 	ax.set_ylabel("Test Accuracy")
 	ax.set_title("Category Classification Accuracy by Experiment")
@@ -217,7 +217,7 @@ def main():
 	parser.add_argument("--embeddings-root", default="Embeddings")
 	parser.add_argument(
 		"--checkpoint",
-		default="results/tensor_board_logs_no_freeze/results/HebbFeature_no_freeze_(6).pkl",
+		default="results/tensor_board_logs_no_freeze_augment_brady/results/HebbFeature_no_freeze_augment_brady_(10).pkl",
 	)
 	parser.add_argument("--out", default="results/hebb_category_comparison.json")
 	parser.add_argument("--test-frac", type=float, default=0.2)

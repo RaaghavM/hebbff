@@ -66,7 +66,7 @@ class NetworkBase(nn.Module):
         self.hist['time'] = timer.elapsed        
 
     
-    def _train_epoch(self, trainData, validBatch=None, batchSize=1, earlyStop=True, earlyStopValid=False, validStopThres=None):
+    def _train_epoch(self, trainData, validBatch=None, batchSize=1, earlyStop=True, earlyStopValid=False, validStopThres=None, accuracyStopThres=4.99):
         for b in range(0, trainData.tensors[0].shape[1], 1 if batchSize is None else batchSize):  #trainData is shape [T,D,N]
             trainBatch = trainData[:,b,:] if batchSize is None else trainData[:,b:b+batchSize,:] 
             
@@ -82,7 +82,7 @@ class NetworkBase(nn.Module):
                 return True
             if validStopThres is not None and self.hist['valid_acc'][-1]>validStopThres:
                 return True
-            if earlyStop and sum(self.hist['train_acc'][-5:]) >= 4.99: #not a proper early-stop criterion but useful for infinite data regime
+            if earlyStop and sum(self.hist['train_acc'][-5:]) >= accuracyStopThres: #not a proper early-stop criterion but useful for infinite data regime
                 return True
         return False
                        
@@ -321,7 +321,7 @@ def train_infinite(net, gen_data, iters=float('inf'), batchSize=None, earlyStop=
             break   
 
       
-def train_curriculum(net, gen_data, iters=float('inf'), itersToQuit=2e6, batchSize=None, R0=1, Rf=float('inf'), increment=lambda R:R+1):          
+def train_curriculum(net, gen_data, iters=float('inf'), itersToQuit=2e6, batchSize=None, R0=1, Rf=float('inf'), increment=lambda R:R+1, accuracyStopThres=4.99):          
     R = R0
     trainBatch = gen_data(R)[:,0,:] if batchSize is None else gen_data(R)[:,:batchSize,:] 
     net._monitor_init(trainBatch)
@@ -342,7 +342,7 @@ def train_curriculum(net, gen_data, iters=float('inf'), itersToQuit=2e6, batchSi
             net.autosave(force=True)                      
                  
         trainCache = gen_data(R)   
-        converged = net._train_epoch(trainCache, batchSize=batchSize)  
+        converged = net._train_epoch(trainCache, batchSize=batchSize, accuracyStopThres=accuracyStopThres)  
         itersSinceIncrement = net.hist['iter'] - latestIncrementIter
         
         #TODO: this is a hack to force the net to add at least 5 entries to hist['acc'] 

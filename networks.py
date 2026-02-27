@@ -201,10 +201,18 @@ class HebbNet(StatefulBase):
 
 
 class HebbFeatureLayer(HebbNet):
-    def __init__(self, init, Nx, f=torch.sigmoid, fOut=torch.sigmoid, **hebbArgs):
+    def __init__(self, init, Nx, nonlinear=None, f=torch.sigmoid, fOut=torch.sigmoid, **hebbArgs):
         super(HebbFeatureLayer, self).__init__(init, f=torch.sigmoid, fOut=torch.sigmoid, **hebbArgs)
         _,d = self.w1.shape
-        self.featurizer = nn.Linear(Nx, d)
+        if nonlinear == 'relu':
+            self.featurizer = nn.Sequential(
+            nn.Linear(Nx, d),
+            nn.ReLU(inplace=True),
+        )
+        elif nonlinear == None:
+            self.featurizer = nn.Linear(Nx, d)
+        else:
+            raise ValueError("nonlinear must be 'relu' or None")
         
     def forward(self, x, isFam=False, debug=False):
         xFeat = self.featurizer(x)

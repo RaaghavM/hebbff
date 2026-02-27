@@ -112,7 +112,7 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate HebbFeatureLayer checkpoint on Embeddings experiments")
     parser.add_argument(
         "--checkpoint",
-        default="results/tensor_board_logs_no_freeze/results/HebbFeature_no_freeze_(6).pkl",
+        default="results/tensor_board_logs_no_freeze_augment_brady/results/HebbFeature_no_freeze_augment_brady_(10).pkl",
     )
     parser.add_argument("--embeddings-root", default="Embeddings")
     parser.add_argument("--stop-at-r", type=int, default=None)
@@ -120,7 +120,13 @@ def main():
     parser.add_argument("--out", default="results/embedding_eval_hebbfeature_no_freeze_6.json")
     args = parser.parse_args()
 
-    net = load_hebb_feature_layer(args.checkpoint, 512, 1, 16, 50)
+    # Parameters
+    Nx = 512  # Raw image feature dimension (from ResNet output)
+    d = 128    # Compressed feature dimension
+    Nh = 32   # Hidden Hebbian layer size
+    Ny = 1    # Output dimension (recognition task)
+
+    net = load_hebb_feature_layer(args.checkpoint, Nx, Ny, Nh, d)
 
     root = Path(args.embeddings_root)
     experiments = sorted([p for p in root.iterdir() if p.is_dir()])

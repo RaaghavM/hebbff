@@ -58,7 +58,7 @@ def plot_generalization(testR, testAcc, truePosRate, falsePosRate, chance=None, 
     ax[1].set_ylabel('Probability')
     ax[1].set_xlabel('$R_{test}$')
 
-    return ax
+    return fig, ax
 
 
 def plot_acc_vs_T(Tlist, Rlist, acc, tp, fp, chance=None):
