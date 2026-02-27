@@ -127,7 +127,7 @@ def load_hebb_model(checkpoint_path, device="cpu"):
     print(f"Inferred architecture: Nx={Nx}, d={d}, Nh={Nh}, Ny={Ny}")
 
     model = HebbFeatureLayer(init=[d, Nh, Ny], Nx=Nx)
-    model.load_state_dict(state)
+    model.load_state_dict(state,strict=False)
     model.to(device)
     model.eval()
     return model
