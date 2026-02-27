@@ -118,13 +118,16 @@ def train_logistic_classifier(
 def load_hebb_model(checkpoint_path, device="cpu"):
     state = torch.load(checkpoint_path, map_location="cpu")
 
-    Nx = 512
-    Nh = 32
-    Ny = 1
-    d = 128
+     # ---- Infer architecture from checkpoint ----
+    Nx = state["featurizer.weight"].shape[1]
+    d  = state["featurizer.weight"].shape[0]
+    Nh = state["w1"].shape[0]
+    Ny = state["w2"].shape[0]
+
+    print(f"Inferred architecture: Nx={Nx}, d={d}, Nh={Nh}, Ny={Ny}")
 
     model = HebbFeatureLayer(init=[d, Nh, Ny], Nx=Nx)
-    model.load_state_dict(state, strict=False)
+    model.load_state_dict(state)
     model.to(device)
     model.eval()
     return model
