@@ -10,6 +10,7 @@ results/
 others/
 Images/
 precomputed_embeddings/
+Embeddings_ObjectsAll_L3/
 
 *_eval_*.pkl
 *_generalization.pkl

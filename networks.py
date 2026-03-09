@@ -140,11 +140,31 @@ class HebbNet(StatefulBase):
      
      
     def evaluate(self, batch):
-        self.reset_state()
-        out = torch.empty_like(batch[1]) 
-        for t,(x,y) in enumerate(zip(*batch)): 
-            out[t] = self(x, isFam=bool(y)) 
-        return out
+        x, y = batch
+        out = torch.empty_like(y)
+
+        # Single sequence: x.shape == [T, Nx]
+        if x.dim() == 2:
+            self.reset_state()
+            for t in range(x.shape[0]):
+                yt = y[t]
+                is_fam = bool(yt[0]) if yt.numel() > 1 else bool(yt)
+                out[t] = self(x[t], isFam=is_fam)
+            return out
+
+        # Batched sequences: x.shape == [T, B, Nx].
+        # Hebbian state is sequence-specific, so each batch column is evaluated independently.
+        if x.dim() == 3:
+            T, B = x.shape[:2]
+            for b in range(B):
+                self.reset_state()
+                for t in range(T):
+                    yt = y[t, b]
+                    is_fam = bool(yt[0]) if yt.numel() > 1 else bool(yt)
+                    out[t, b] = self(x[t, b], isFam=is_fam)
+            return out
+
+        raise ValueError(f"Unsupported input rank for evaluate(): {x.dim()}")
         
     
     @torch.no_grad()    
@@ -199,6 +219,101 @@ class HebbNet(StatefulBase):
                     self.writer.add_scalar('params/g1', self.g1.item(), self.hist['iter'])
 
 
+class HebbExtendedFeatureLayer(HebbNet):
+    # Uses embedding_model as a featurizer, followed by linear downsampling as input into HebbFF. The downsampling can be nonlinear (ReLU) or linear.
+    def __init__(self, init, Nx, embedding_model, nonlinear=None, f=torch.sigmoid, fOut=torch.sigmoid, **hebbArgs):
+        super(HebbExtendedFeatureLayer, self).__init__(init, f=torch.sigmoid, fOut=torch.sigmoid, **hebbArgs)
+        _,d = self.w1.shape
+        if nonlinear == 'relu':
+            self.featurizer = nn.Sequential(
+            nn.Linear(Nx, d),
+            nn.ReLU(inplace=True),
+        )
+        elif nonlinear == None:
+            self.featurizer = nn.Linear(Nx, d)
+        else:
+            raise ValueError("nonlinear must be 'relu' or None")
+        self.embedding_model = embedding_model
+        self.embed_batch_size = 256
+        
+    def forward(self, x, isFam=False, debug=False):
+        x_emb = self.embedding_model(x)
+        xFeat = self.featurizer(x_emb)
+        # HebbNet.forward uses addmv, which expects a 1D input vector.
+        # When the embedding path returns shape [1, d], squeeze the singleton batch axis.
+        if xFeat.dim() == 2 and xFeat.shape[0] == 1:
+            xFeat = xFeat.squeeze(0)
+        return super(HebbExtendedFeatureLayer, self).forward(xFeat, isFam, debug)
+
+    def evaluate(self, batch):
+        x, y = batch
+        out = torch.empty_like(y)
+
+        def _embed_chunks(x_flat):
+            feats = []
+            for s in range(0, x_flat.shape[0], self.embed_batch_size):
+                e = min(s + self.embed_batch_size, x_flat.shape[0])
+                feats.append(self.featurizer(self.embedding_model(x_flat[s:e])))
+            return torch.cat(feats, dim=0)
+
+        # Single sequence: x.shape == [T, Nx]
+        if x.dim() == 2:
+            self.reset_state()
+            x_feat_seq = _embed_chunks(x)
+            for t in range(x.shape[0]):
+                yt = y[t]
+                is_fam = bool(yt[0]) if yt.numel() > 1 else bool(yt)
+                out[t] = HebbNet.forward(self, x_feat_seq[t], isFam=is_fam)
+            return out
+
+        # Batched sequences: x.shape == [T, B, Nx].
+        # First embed features in chunked batched mode for throughput, then apply recurrent Hebbian updates.
+        if x.dim() == 3:
+            T, B = x.shape[:2]
+            x_feat = _embed_chunks(x.reshape(T * B, x.shape[2])).reshape(T, B, -1)
+            for b in range(B):
+                self.reset_state()
+                for t in range(T):
+                    yt = y[t, b]
+                    is_fam = bool(yt[0]) if yt.numel() > 1 else bool(yt)
+                    out[t, b] = HebbNet.forward(self, x_feat[t, b], isFam=is_fam)
+            return out
+
+        raise ValueError(f"Unsupported input rank for evaluate(): {x.dim()}")
+        
+    @torch.no_grad()    
+    def evaluate_debug(self, batch, recogOnly=True):
+        """ It's possible to make this network perform other tasks simultaneously by adding an extra output unit
+        and (if necessary) overriding the loss and accuracy functions. To evaluate such a network on only the 
+        recognition part of the task, set recogOnly=True
+        """
+        Nh,d = self.w1.shape  
+        T = len(batch[1])
+        db = {'a1' : torch.empty(T,Nh),
+              'h' : torch.empty(T,Nh),
+              'Wxb' : torch.empty(T,Nh),
+              'Ax' : torch.empty(T,Nh),
+              'a2' : torch.empty_like(batch[1]),
+              'out' : torch.empty_like(batch[1])}
+        for t,(x,y) in enumerate(zip(*batch)):
+            x_emb = self.embedding_model(x)
+            x_feat = self.featurizer(x_emb)
+            if x_feat.dim() == 2 and x_feat.shape[0] == 1:
+                x_feat = x_feat.squeeze(0)
+            db['Ax'][t] = torch.mv(self.A, x_feat) 
+            try: isFam = bool(y)
+            except: isFam = bool(y[0])
+            db['a1'][t], db['h'][t], db['a2'][t], db['out'][t] = self(x, isFam=isFam, debug=True)      
+            w1 = self.g1*self.w1 if hasattr(self, 'g1') and not torch.isnan(self.g1) else self.w1
+            db['Wxb'][t] = torch.addmv(self.b1, w1, x_feat) 
+        db['acc'] = self.accuracy(batch).item()  
+                        
+        if recogOnly and len(db['out'].shape)>1:
+            db['data'] = TensorDataset(batch[0], batch[1][:,0].unsqueeze(1))
+            db['out'] = db['out'][:,0].unsqueeze(1)
+            db['a2'] = db['a2'][:,0].unsqueeze(1)
+            db['acc'] = self.accuracy(batch).item()        
+        return db
 
 class HebbFeatureLayer(HebbNet):
     def __init__(self, init, Nx, nonlinear=None, f=torch.sigmoid, fOut=torch.sigmoid, **hebbArgs):

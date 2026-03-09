@@ -12,9 +12,13 @@ from torchvision import transforms
 from collections import OrderedDict
 from data import build_precomputed_embedding_banks
 
-IMAGE_DIR = "/home/raaghav/hebbff/Images/OBJECTSALL"
-base_out_npy = "precomputed_embeddings/base_bank/brady_base.npy"
-aug_out_npy = "precomputed_embeddings/aug_bank/brady_aug.npy"
+# IMAGE_DIR = "/home/raaghav/hebbff/Images/OBJECTSALL"
+# base_out_npy = "precomputed_embeddings/base_bank/brady_base.npy"
+# aug_out_npy = "precomputed_embeddings/aug_bank/brady_aug.npy"
+IMAGE_DIR = "/home/raaghav/hebbff/Images/Stimuli"
+base_out_npy = "precomputed_embeddings/base_bank/rutis_base_layer3_no_pool.npy"
+aug_out_npy = "precomputed_embeddings/aug_bank/rutis_aug_layer3_no_pool.npy"
+layer = "layer3_no_pool"
 
 # Clear existing files
 if os.path.exists(base_out_npy):
@@ -35,7 +39,8 @@ print(f"Total images found: {len(images_paths)}")
 
 # Build the embedding banks
 num_augmentations_per_image = 1000
-build_precomputed_embedding_banks(images_paths, base_out_npy, aug_out_npy, num_augmentations_per_image, verbose=True, max_img_cache=3000, batch_size=512, device="cuda")
+# Using batch size 1 because images are different size
+build_precomputed_embedding_banks(images_paths, base_out_npy, aug_out_npy, num_augmentations_per_image, verbose=True, max_img_cache=3000, batch_size=1, device="cuda", layer=layer)
 
 # Print checks
 base_embeddings = np.load(base_out_npy, mmap_mode="r")

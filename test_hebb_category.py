@@ -217,7 +217,7 @@ def main():
 	parser.add_argument("--embeddings-root", default="Embeddings")
 	parser.add_argument(
 		"--checkpoint",
-		default="results/tensor_board_logs_no_freeze_augment_brady/results/HebbFeature_no_freeze_augment_brady_(10).pkl",
+		default="results/tensor_board_logs_no_freeze_augment_rutis/results/HebbFeature_no_freeze_augment_rutis_(4).pkl",
 	)
 	parser.add_argument("--out", default="results/hebb_category_comparison.json")
 	parser.add_argument("--test-frac", type=float, default=0.2)
