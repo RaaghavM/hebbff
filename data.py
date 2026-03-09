@@ -10,6 +10,7 @@ from PIL import Image
 import torchvision.models as models
 from torchvision import transforms
 from collections import OrderedDict
+from matplotlib import pyplot as plt
                
 def generate_recog_data(T=2000, d=50, R=1, P=0.5, interleave=True, multiRep=False, xDataVals='+-', softLabels=False):
     """Generates "image recognition dataset" sequence of (x,y) tuples. 
@@ -364,7 +365,12 @@ class GenRecogClassifyData_AD_Batched():
             batchSize = max(1, int(self.datasize // T))
 
         total_samples = T * batchSize
-        random_indices = torch.randperm(self.datasize)[:total_samples].reshape(T, batchSize)  # CPU
+        if total_samples <= self.datasize:
+            random_indices = torch.randperm(self.datasize)[:total_samples].reshape(T, batchSize)  # CPU
+        else:
+            raise ValueError(f"Requested total samples {total_samples} exceeds dataset size {self.datasize}. Consider reducing T or batchSize.")
+            # If requesting more samples than available images, fall back to sampling with replacement.
+            random_indices = torch.randint(0, self.datasize, (T, batchSize), dtype=torch.long)  # CPU
 
         x = torch.zeros(T, batchSize, 512, device=device)
         y = torch.zeros(T, batchSize, dtype=torch.bool, device=device)
@@ -423,6 +429,7 @@ def build_precomputed_embedding_banks(
     dtype=np.float16,
     verbose=False,
     max_img_cache: int = 1024,
+    layer: Optional[str] = None,
 ):
     """
     One-time offline precompute.
@@ -434,9 +441,55 @@ def build_precomputed_embedding_banks(
     assert len(image_paths) > 0, "image_paths must be non-empty"
 
     # Frozen ResNet18 backbone (512-d output)
-    resnet = models.resnet18(pretrained=True)
-    resnet = nn.Sequential(*list(resnet.children())[:-1]).eval().to(device)
-    resnet.requires_grad_(False)
+    if layer is None:
+        resnet = models.resnet18(pretrained=True)
+        model = nn.Sequential(*list(resnet.children())[:-1]).eval().to(device)
+        model.requires_grad_(False)
+        dim = 512
+    elif layer == "layer3":
+        resnet = models.resnet18(pretrained=True)
+        model = nn.Sequential(
+            resnet.conv1,
+            resnet.bn1,
+            resnet.relu,
+            resnet.maxpool,
+            resnet.layer1,
+            resnet.layer2,
+            resnet.layer3,          
+            nn.AdaptiveAvgPool2d((1, 1))
+        )
+        model.eval()
+        model.to(device)
+        dim = 256
+    elif layer == "layer3_no_pool":
+        resnet = models.resnet18(pretrained=True)
+        model = nn.Sequential(
+            resnet.conv1,
+            resnet.bn1,
+            resnet.relu,
+            resnet.maxpool,
+            resnet.layer1,
+            resnet.layer2,
+            resnet.layer3,
+            nn.AdaptiveAvgPool2d((14, 14))        
+        )
+        model.eval()
+        model.to(device)
+        dim = 256 * 14 * 14
+    elif layer == "layer2":
+        resnet = models.resnet18(pretrained=True)
+        model = nn.Sequential(
+            resnet.conv1,
+            resnet.bn1,
+            resnet.relu,
+            resnet.maxpool,
+            resnet.layer1,
+            resnet.layer2,          
+            nn.AdaptiveAvgPool2d((1, 1))
+        )
+        model.eval()
+        model.to(device)
+        dim = 128
 
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
@@ -454,7 +507,7 @@ def build_precomputed_embedding_banks(
 
     N = len(image_paths)
     base_bank = np.lib.format.open_memmap(
-        base_out_npy, mode="w+", dtype=dtype, shape=(N, 512)
+        base_out_npy, mode="w+", dtype=dtype, shape=(N, dim)
     )
 
     aug_bank = None
@@ -462,7 +515,7 @@ def build_precomputed_embedding_banks(
         if aug_out_npy is None:
             raise ValueError("aug_out_npy is required when num_aug > 0")
         aug_bank = np.lib.format.open_memmap(
-            aug_out_npy, mode="w+", dtype=dtype, shape=(N, num_aug, 512)
+            aug_out_npy, mode="w+", dtype=dtype, shape=(N, num_aug, dim)
         )
 
     # LRU cache: idx -> np.uint8 HWC image
@@ -496,7 +549,7 @@ def build_precomputed_embedding_banks(
                 img = _load_image_cached(i)
                 imgs.append(_to_tensor(img))
             batch = torch.stack(imgs, dim=0).to(device, non_blocking=True)
-            emb = resnet(batch).squeeze(-1).squeeze(-1).cpu().numpy().astype(dtype, copy=False)
+            emb = model(batch).squeeze(-1).squeeze(-1).flatten(1).cpu().numpy().astype(dtype, copy=False)
             base_bank[s:e] = emb
 
         if verbose:
@@ -515,7 +568,7 @@ def build_precomputed_embedding_banks(
                         img = transform(image=img)["image"]
                         imgs.append(_to_tensor(img))
                     batch = torch.stack(imgs, dim=0).to(device, non_blocking=True)
-                    emb = resnet(batch).squeeze(-1).squeeze(-1).cpu().numpy().astype(dtype, copy=False)
+                    emb = model(batch).squeeze(-1).squeeze(-1).flatten(1).cpu().numpy().astype(dtype, copy=False)
                     aug_bank[s:e, k, :] = emb
 
     # flush
@@ -533,27 +586,29 @@ class GenRecogClassifyData_AD_Precompute():
         base_bank_npy: str,
         aug_bank_npy: Optional[str] = None,
         device: str = "cpu",
+        embedding_size: int = 512,
     ):
         self.image_paths = image_paths
         self.datasize = len(image_paths) if image_paths else 0
         self.device = device
+        self.embedding_size = embedding_size
 
         if not os.path.exists(base_bank_npy):
             raise FileNotFoundError(base_bank_npy)
 
-        self.base_bank = np.load(base_bank_npy, mmap_mode="r")  # [N,512]
+        self.base_bank = np.load(base_bank_npy, mmap_mode="r")  # [N,embedding_size]
         self.aug_bank = np.load(aug_bank_npy, mmap_mode="r") if aug_bank_npy else None
 
-        if self.base_bank.shape[0] != self.datasize or self.base_bank.shape[1] != 512:
-            raise ValueError("base bank shape must be [len(image_paths), 512]")
+        if self.base_bank.shape[0] != self.datasize or self.base_bank.shape[1] != embedding_size:
+            raise ValueError("base bank shape must be [len(image_paths), embedding_size]")
         if self.aug_bank is not None:
-            if self.aug_bank.shape[0] != self.datasize or self.aug_bank.shape[2] != 512:
-                raise ValueError("aug bank shape must be [len(image_paths), K, 512]")
+            if self.aug_bank.shape[0] != self.datasize or self.aug_bank.shape[2] != embedding_size:
+                raise ValueError("aug bank shape must be [len(image_paths), K, embedding_size]")
 
     def load_embed_batch(self, indices, apply_transform=True):
         idx = np.asarray(indices, dtype=np.int64)
         if idx.size == 0:
-            return torch.empty((0, 512), device=self.device)
+            return torch.empty((0, self.embedding_size), device=self.device)
 
         if apply_transform and self.aug_bank is not None:
             K = self.aug_bank.shape[1]
@@ -576,10 +631,20 @@ class GenRecogClassifyData_AD_Precompute():
         elif batchSize < 0:
             batchSize = max(1, int(self.datasize // T))
 
-        total_samples = T * batchSize
-        random_indices = torch.randperm(self.datasize)[:total_samples].reshape(T, batchSize)  # CPU
+        if T > self.datasize:
+            raise ValueError(
+                f"Cannot generate {T} novel timesteps from only {self.datasize} images without reuse. "
+                "Reduce T (or R/Tmul) or increase image pool size."
+            )
 
-        x = torch.zeros(T, batchSize, 512, device=device)
+        # Build independent index streams per sequence (batch column) without replacement.
+        # This prevents accidental repeats being mislabeled as novel.
+        random_indices = torch.stack(
+            [torch.randperm(self.datasize)[:T] for _ in range(batchSize)],
+            dim=1,
+        )  # [T, B] on CPU
+
+        x = torch.zeros(T, batchSize, self.embedding_size, device=device)
         y = torch.zeros(T, batchSize, dtype=torch.bool, device=device)
 
         x[0] = self.load_embed_batch(random_indices[0].tolist(), apply_transform=False)
